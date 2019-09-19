@@ -1,6 +1,8 @@
 
 #include "download.h"
 
+ULONG g_quiet;
+
 // success : return 0
 int ParseUrl(const char *url, OUT char *pchHost, OUT USHORT *port, OUT char **ppfile)
 {
@@ -51,6 +53,9 @@ int ParseUrl(const char *url, OUT char *pchHost, OUT USHORT *port, OUT char **pp
 
 BOOLEAN http_parse_result(const char *buf)
 {
+    if (!g_quiet)
+        printf("%s", buf);
+
     char *p = (char*)strstr(buf, "HTTP/1.1");
     if (!p)
     {
@@ -60,7 +65,6 @@ BOOLEAN http_parse_result(const char *buf)
 
     if(atoi(p + 9) != 200)
     {
-        printf("result:\n%s\n", buf);
         return FALSE;
     }
 
@@ -162,15 +166,18 @@ HANDLE CreateFileByUrlA(const char *pUrl, const char *pchDownload2Path)
         }
         else
         {
-            printf("%s :", chFilePathName);
+            if (!g_quiet)
+                printf("%s :", chFilePathName);
         }
     }
 
     return hFile;
 }
 
-void Download(const char *pUrl, const char *pchDownload2Path)
+int Download(const char *pUrl, const char *pchDownload2Path)
 {
+    int ret = -1;
+    char *pchFileName = strrchr((char *)pUrl, '/') + 1;
     char host[BUFFER_SIZE];
     USHORT port = PORT_80;
     char *file;
@@ -180,16 +187,22 @@ void Download(const char *pUrl, const char *pchDownload2Path)
         return HttpsDownload(pUrl, pchDownload2Path);
     }
 
+    HANDLE hFile = CreateFileByUrlA(pUrl, pchDownload2Path);
+    if (hFile == INVALID_HANDLE_VALUE)
+        return ret;
+
     SOCKET s = ConnectTo(host, port);
     if (s == NULL)
-        return;
+        return ret;
 
     char *buf = (char*)malloc(DL_BUF_SIZE);
     int len = sprintf_s(buf, DL_BUF_SIZE, HTTP_GET, file, host, port);
     if (len < 0)
-        return;
+        return ret;
     buf[len] = 0;
-    printf("%s", buf);
+
+    if (!g_quiet)
+        printf("%s", buf);
 
     send(s, buf, len, 0);
 
@@ -197,12 +210,12 @@ void Download(const char *pUrl, const char *pchDownload2Path)
 L_GetFileLen:
     len = recv(s, buf, DL_BUF_SIZE, 0);
     if (len <= 0)
-        return;
+        return ret;
 
     if (!ResultParse)
     {
         if (!http_parse_result(buf))
-            return;
+            return ret;
         ResultParse = 1;
     }
 
@@ -210,10 +223,8 @@ L_GetFileLen:
     if (!FileSize)
         goto L_GetFileLen;
 
-    HANDLE hFile = CreateFileByUrlA(pUrl, pchDownload2Path);
-    if (hFile == INVALID_HANDLE_VALUE)
-        return;
-    printf(" %d bytes\n\n", FileSize);
+    if (!g_quiet)
+        printf(" %d bytes\n\n", FileSize);
 
     char *p = strstr(buf, "\r\n\r\n");
     while (!p)
@@ -221,15 +232,18 @@ L_GetFileLen:
         len = recv(s, buf, DL_BUF_SIZE, 0);
         if (len <= 0)
         {
-            printf("\ndownload fail!\n");
-            return;
+            printf("  %s download fail !!!\n", pchFileName);
+            return ret;
         }
     }
 
     ULONG HeadLen = p + 4 - buf;
     len -= HeadLen;
     if (len)
-        printf("Download : %dKB\n", len / 1024);
+    {
+        if (!g_quiet)
+            printf("Download : %dKB\n", len / 1024);
+    }
 
     while (FileSize > (ULONG)len &&
            DL_BUF_SIZE - (ULONG)len - HeadLen > 1024 )
@@ -237,13 +251,14 @@ L_GetFileLen:
         int tmp = recv(s, buf + len + HeadLen, DL_BUF_SIZE - len - HeadLen, 0);
         if (tmp <= 0)
         {
-            printf("\ndownload fail!\n");
-            return;
+            printf("  %s download fail !!!\n", pchFileName);
+            return ret;
         }
         else
         {
             len += tmp;
-            printf("Download : %dKB\n", len / 1024);
+            if (!g_quiet)
+                if (!g_quiet)printf("Download : %dKB\n", len / 1024);
         }
     }
 
@@ -252,7 +267,8 @@ L_GetFileLen:
     ULONG BytesWritten;
     WriteFile(hFile, buf + HeadLen, len, &BytesWritten, NULL);
     writen += BytesWritten;
-    printf("WriteFile(%d)\n", ++WriteCnt);
+    if (!g_quiet)
+        printf("WriteFile(%d)\n", ++WriteCnt);
 
     while (writen < FileSize)
     {
@@ -265,46 +281,80 @@ L_GetFileLen:
             tmp = recv(s, buf + sublen, DL_BUF_SIZE - sublen, 0);
             if (tmp <= 0)
             {
-                printf("\ndownload fail!\n");
-                return;
+                printf("  %s download fail !!!\n", pchFileName);
+                return ret;
             }
             else
             {
                 sublen += tmp;
                 len += tmp;
-                printf("Download : %dKB\n", len / 1024);
+                if (!g_quiet)
+                    printf("Download : %dKB\n", len / 1024);
             }
         }
 
         WriteFile(hFile, buf, sublen, &BytesWritten, NULL);
         writen += BytesWritten;
-        printf("WriteFile(%d)\n", ++WriteCnt);
+        if (!g_quiet)
+            printf("WriteFile(%d)\n", ++WriteCnt);
     }
-    
+
     if (writen == FileSize)
     {
-        printf("\ndownload complete~\n");
+        printf("%s download complete~\n", pchFileName);
+        ret = 0;
     }
     else
     {
-        printf("\ndownload fail!\n");
+        printf("  %s download fail !!!\n", pchFileName);
     }
 
     CloseHandle(hFile);
     free(buf);
     closesocket(s);
     WSACleanup();
+    return ret;
 }
 
 int main(int argc, char *argv[])
 {
+    int ret = -1;
+
     if (argc == 2)
-        Download(argv[1], "s:");
+        ret = Download(argv[1], "s:");
+    else if (argc == 3)
+    {
+        if (!strcmp(argv[1], "/quiet"))
+        {
+            g_quiet = 1;
+            ret = Download(argv[2], "s:");
+        }
+        else
+        {
+            ret = Download(argv[1], argv[2]);
+        }
+    }
+    else if (argc == 4)
+    {
+        if (!strcmp(argv[1], "/quiet"))
+        {
+            g_quiet = 1;
+            ret = Download(argv[2], argv[3]);
+        }
+        else
+        {
+            goto L_printUsage;
+        }
+    }
     else
-        printf("usage : dl \"url\"\n"
+    {
+L_printUsage:
+        printf("usage : dl [/quiet] \"url\"\n"
                "    url include http/https.\n"
                "    sometime, \"\" is important!\n");
+    }
 
-    getchar();
-    return 0;
+    if (!g_quiet)
+        getchar();
+    return ret;
 }

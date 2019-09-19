@@ -18,5 +18,5 @@ SOCKET ConnectTo(const char *host, USHORT port);
 BOOLEAN http_parse_result(const char *buf);
 ULONG GetFileLength(char *buf);
 
-void HttpsDownload(const char *pUrl, const char *pchDownload2Path);
+int HttpsDownload(const char *pUrl, const char *pchDownload2Path);
 HANDLE CreateFileByUrlA(const char *pUrl, const char *pchDownload2Path);

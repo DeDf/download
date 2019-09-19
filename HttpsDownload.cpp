@@ -7,12 +7,14 @@
 
 #ifdef _DEBUG
 #pragma comment(linker, "\"/manifestdependency:type='Win32' name='Microsoft.VC80.CRT' version='8.0.50608.0' processorArchitecture='X86' publicKeyToken='1fc8b3b9a1e18e3b' language='*'\"")
+#include "applink.c"
 #endif
 
 #pragma comment(lib,"ws2_32.lib")
 #pragma comment(lib,"libcrypto.lib")
 #pragma comment(lib,"libssl.lib")
 
+extern ULONG g_quiet;
 // Simple structure to keep track of the handle,
 //  and of what needs to be freed later.
 typedef struct
@@ -135,8 +137,10 @@ void sslDisconnect (connection *c)
     free (c);
 }
 
-void HttpsDownload(const char *pUrl, const char *pchDownload2Path)
+int HttpsDownload(const char *pUrl, const char *pchDownload2Path)
 {
+    int ret = -1;
+    char *pchFileName = strrchr((char *)pUrl, '/') + 1;
     char host[BUFFER_SIZE];
     USHORT port = PORT_443;
     char *file;
@@ -144,17 +148,22 @@ void HttpsDownload(const char *pUrl, const char *pchDownload2Path)
     if (ParseHttpsUrl(pUrl, host, &port, &file))
     {
         printf("ParseUrl() failed!\n");
-        return;
+        return ret;
     }
+
+    HANDLE hFile = CreateFileByUrlA(pUrl, pchDownload2Path);
+    if (hFile == INVALID_HANDLE_VALUE)
+        return ret;
 
     connection *c = sslConnect (host, port);
     if (c == NULL)
-        return;
+        return ret;
 
     char *buf = (char*)malloc(DL_BUF_SIZE);
     ULONG len = sprintf_s(buf, DL_BUF_SIZE, HTTP_GET, file, host, port);
     buf[len] = 0;
-    printf("%s", buf);
+    if (!g_quiet)
+        printf("%s", buf);
 
     len = SSL_write (c->sslHandle, buf, len);
     ERR_print_errors_fp (stderr);
@@ -163,23 +172,22 @@ void HttpsDownload(const char *pUrl, const char *pchDownload2Path)
 L_GetFileLen:
     len = SSL_read (c->sslHandle, buf, DL_BUF_SIZE);
     if (len <= 0)
-        return;
+        return ret;
 
     if (!ResultParse)
     {
+        buf[len] = 0;
         if (!http_parse_result(buf))
-            return;
+            return ret;
         ResultParse = 1;
     }
 
     ULONG FileSize = GetFileLength(buf);
     if (!FileSize)
         goto L_GetFileLen;
-
-    HANDLE hFile = CreateFileByUrlA(pUrl, pchDownload2Path);
-    if (hFile == INVALID_HANDLE_VALUE)
-        return;
-    printf(" %d bytes\n\n", FileSize);
+    
+    if (!g_quiet)
+        printf(" %d bytes\n\n", FileSize);
 
     char *p = strstr(buf, "\r\n\r\n");
     while (!p)
@@ -187,15 +195,18 @@ L_GetFileLen:
         len = SSL_read(c->sslHandle, buf, DL_BUF_SIZE);
         if (len <= 0)
         {
-            printf("\ndownload fail!\n");
-            return;
+            printf("  %s download fail !!!\n", pchFileName);
+            return ret;
         }
     }
 
     ULONG HeadLen = p + 4 - buf;
     len -= HeadLen;
     if (len)
-        printf("Download : %dKB\n", len / 1024);
+    {
+        if (!g_quiet)
+            printf("Download : %dKB\n", len / 1024);
+    }
 
     while (FileSize > (ULONG)len &&
         DL_BUF_SIZE - (ULONG)len - HeadLen > 1024 )
@@ -203,13 +214,14 @@ L_GetFileLen:
         int tmp = SSL_read(c->sslHandle, buf + len + HeadLen, DL_BUF_SIZE - len - HeadLen);
         if (tmp <= 0)
         {
-            printf("\ndownload fail!\n");
-            return;
+            printf("  %s download fail !!!\n", pchFileName);
+            return ret;
         }
         else
         {
             len += tmp;
-            printf("Download : %dKB\n", len / 1024);
+            if (!g_quiet)
+                printf("Download : %dKB\n", len / 1024);
         }
     }
 
@@ -218,7 +230,8 @@ L_GetFileLen:
     ULONG BytesWritten;
     WriteFile(hFile, buf + HeadLen, len, &BytesWritten, NULL);
     writen += BytesWritten;
-    printf("WriteFile(%d)\n", ++WriteCnt);
+    if (!g_quiet)
+        printf("WriteFile(%d)\n", ++WriteCnt);
 
     while (writen < FileSize)
     {
@@ -231,33 +244,37 @@ L_GetFileLen:
             tmp = SSL_read(c->sslHandle, buf + sublen, DL_BUF_SIZE - sublen);
             if (tmp <= 0)
             {
-                printf("\ndownload fail!\n");
-                return;
+                printf("  %s download fail !!!\n", pchFileName);
+                return ret;
             }
             else
             {
                 sublen += tmp;
                 len += tmp;
-                printf("Download : %dKB\n", len / 1024);
+                if (!g_quiet)
+                    printf("Download : %dKB\n", len / 1024);
             }
         }
 
         WriteFile(hFile, buf, sublen, &BytesWritten, NULL);
         writen += BytesWritten;
-        printf("WriteFile(%d)\n", ++WriteCnt);
+        if (!g_quiet)
+            printf("WriteFile(%d)\n", ++WriteCnt);
     }
 
     if (writen == FileSize)
     {
-        printf("\ndownload complete~\n");
+        ret = 0;
+        printf("%s download complete~\n", pchFileName);
     }
     else
     {
-        printf("\ndownload fail!\n");
+        printf("  %s download fail !!!\n", pchFileName);
     }
 
     CloseHandle(hFile);
     free(buf);
     sslDisconnect(c);
     WSACleanup();
+    return ret;
 }
